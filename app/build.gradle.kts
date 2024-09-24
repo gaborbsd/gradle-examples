@@ -1,3 +1,8 @@
+import com.android.build.gradle.internal.tasks.factory.dependsOn
+import org.jetbrains.kotlin.gradle.plugin.extraProperties
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+import org.jlleitschuh.gradle.ktlint.reporter.ReporterType
+
 /*
  * Copyright 2020 The Android Open Source Project
  *
@@ -20,9 +25,77 @@ plugins {
     alias(libs.plugins.kapt)
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
+    alias(libs.plugins.ktlint)
+    jacoco
+    alias(libs.plugins.openapi)
+}
+
+openApiGenerate {
+    generatorName.set("kotlin")
+    inputSpec.set("${projectDir.path}/src/main/openapi/api.json")
+    outputDir.set("$buildDir/generated/openapi")
+    apiPackage.set("hu.bme.aut.petstore.api")
+    modelPackage.set("hu.bme.aut.petstore.model")
+}
+
+ktlint {
+    android.set(true)
+    ignoreFailures.set(true)
+    reporters {
+        reporter(ReporterType.PLAIN)
+        reporter(ReporterType.HTML)
+    }
+}
+val jacocoTestReport = tasks.register("jacocoTestReport")
+
+tasks.withType<Test> {
+    configure<JacocoTaskExtension> {
+        isIncludeNoLocationClasses = true
+        excludes = listOf("jdk.internal.*")
+    }
+}
+
+tasks.withType<KotlinCompile>().configureEach {
+    dependsOn("openApiGenerate")
 }
 
 android {
+    kotlin.sourceSets["main"].kotlin.srcDir("$buildDir/generated/openapi/src/main/kotlin")
+
+    applicationVariants.all(closureOf<com.android.build.gradle.api.ApplicationVariant> {
+        val testTaskName = "test${this@closureOf.name.capitalize()}UnitTest"
+        val excludes = listOf(
+            // Android
+            "**/R.class",
+            "**/R\$*.class",
+            "**/BuildConfig.*",
+            "**/Manifest*.*"
+        )
+        val reportTask =
+            tasks.register("jacoco${testTaskName.capitalize()}Report", JacocoReport::class) {
+                dependsOn(testTaskName)
+                reports {
+                    xml.required.set(true)
+                    xml.outputLocation.set(layout.buildDirectory.file("reports/jacoco.xml"))
+                    html.required.set(true)
+                    html.outputLocation.set(layout.buildDirectory.dir("reports/jacoco"))
+                }
+                classDirectories.setFrom(
+                    files(
+                        fileTree(this@closureOf.javaCompileProvider.get().destinationDir) {
+                            exclude(excludes)
+                        },
+                        fileTree("$buildDir/tmp/kotlin-classes/${this@closureOf.name}") {
+                            exclude(excludes)
+                        }
+                    )
+                )
+                sourceDirectories.setFrom(this@closureOf.sourceSets.flatMap { it.javaDirectories })
+                executionData.setFrom(file("$buildDir/jacoco/$testTaskName.exec"))
+            }
+        jacocoTestReport.dependsOn(reportTask)
+    })
+
     compileSdk = libs.versions.compileSdk.get().toInt()
 
     defaultConfig {
@@ -32,7 +105,8 @@ android {
         versionCode = 1
         versionName = "1.0"
 
-        testInstrumentationRunner = "com.example.android.architecture.blueprints.todoapp.CustomTestRunner"
+        testInstrumentationRunner =
+            "com.example.android.architecture.blueprints.todoapp.CustomTestRunner"
 
         javaCompileOptions {
             annotationProcessorOptions {
@@ -44,16 +118,23 @@ android {
     buildTypes {
         getByName("debug") {
             isMinifyEnabled = false
-            isTestCoverageEnabled = true
+            enableAndroidTestCoverage = true
+            enableUnitTestCoverage = true
             proguardFiles(getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro")
-            testProguardFiles(getDefaultProguardFile("proguard-android.txt"), "proguardTest-rules.pro")
+            testProguardFiles(
+                getDefaultProguardFile("proguard-android.txt"),
+                "proguardTest-rules.pro"
+            )
         }
 
         getByName("release") {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro")
-            testProguardFiles(getDefaultProguardFile("proguard-android.txt"), "proguardTest-rules.pro")
+            testProguardFiles(
+                getDefaultProguardFile("proguard-android.txt"),
+                "proguardTest-rules.pro"
+            )
         }
     }
 
@@ -197,4 +278,7 @@ dependencies {
     // AndroidX Test - Hilt testing
     androidTestImplementation(libs.hilt.android.testing)
     kaptAndroidTest(libs.hilt.compiler)
+
+    implementation(libs.okhttp)
+    implementation(libs.moshi.kotlin)
 }
